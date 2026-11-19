@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Checks for the method's Contract. Exit 1 on any finding."""
+import re, sys, pathlib
+root = pathlib.Path(__file__).resolve().parent.parent
+f = root / "method-contract.md"
+text = f.read_text(encoding="utf-8")
+lines = text.splitlines()
+findings = []
+
+# 1. dashes
+for n, l in enumerate(lines, 1):
+    if "—" in l or "–" in l:
+        findings.append(f"{f.name}:{n}: em or en dash")
+
+# 2. word count line
+m = re.search(r"^Word count: ([\d,]+)\.", text, re.M)
+count = len(text.split())
+if not m:
+    findings.append(f"{f.name}: no 'Word count: n.' line")
+elif int(m.group(1).replace(",", "")) != count:
+    findings.append(f"{f.name}: word count line says {m.group(1)}, file has {count:,}")
+
+# 3. ids unique, headings of the form ### XX-n, retired ones kept
+heads = [(n, mm.group(1), l) for n, l in enumerate(lines, 1) if (mm := re.match(r"^### ([A-Z]{2}-\d+)", l))]
+seen = {}
+for n, i, l in heads:
+    if i in seen:
+        findings.append(f"{f.name}:{n}: id {i} reused (first at line {seen[i]})")
+    seen[i] = n
+# ids named in retired headings ("BD-1, BD-2 Retired") count as retired
+retired_extra = set()
+for n, i, l in heads:
+    if "Retired" in l:
+        retired_extra.update(re.findall(r"[A-Z]{2}-\d+", l.split("Retired")[0]))
+
+# 4. each active obligation has statement, Reason, Source, Proof
+for idx, (n, i, l) in enumerate(heads):
+    if "Retired" in l:
+        continue
+    end = heads[idx + 1][0] - 1 if idx + 1 < len(heads) else len(lines)
+    body = lines[n:end]
+    body_text = "\n".join(body)
+    # stop at next ## heading inside the block
+    cut = next((k for k, bl in enumerate(body) if bl.startswith("## ")), len(body))
+    body_text = "\n".join(body[:cut])
+    if not re.search(r"^\*\*Reason\.\*\*", body_text, re.M):
+        findings.append(f"{f.name}:{n}: {i} has no Reason")
+    if not re.search(r"^Source: ", body_text, re.M):
+        findings.append(f"{f.name}:{n}: {i} has no Source")
+    if not re.search(r"^Proof: (record|check|question|refusal)", body_text, re.M | re.I):
+        findings.append(f"{f.name}:{n}: {i} has no Proof with a kind")
+    first = next((bl for bl in body[:cut] if bl.strip()), "")
+    if first.startswith("**Reason") or first.startswith("Source:") or first.startswith("Proof:"):
+        findings.append(f"{f.name}:{n}: {i} has no statement before its Reason")
+    src = re.search(r"^Source: (.*)$", body_text, re.M)
+    if src:
+        s = src.group(1)
+        rules = [int(x) for x in re.findall(r"[Rr]ules? (\d+)", s)]
+        for r in rules:
+            if not 1 <= r <= 29:
+                findings.append(f"{f.name}:{n}: {i} cites rule {r}, the site has 29")
+        if "ours" in s.lower() or "Ours" in s:
+            if not re.search(r"20\d\d-\d\d-\d\d", s):
+                findings.append(f"{f.name}:{n}: {i} marks 'ours' with no dated decision")
+
+# 5. no implementation, repo, tool or workspace names (the user's quoted words excepted)
+names = r"\b(troupe|skill|module|g1|ledger|workspace|claude|codex|mutineer|stryker|rubocop|exhale's|cosmonauts|herdr|github|rails)\b"
+for n, l in enumerate(lines, 1):
+    if l.startswith("The user, 20") and '"' in l:
+        continue  # the user's quoted words
+    for mm in re.finditer(names, l, re.I):
+        w = mm.group(0)
+        if w.lower() == "rails" and "guardrails" in l.lower():
+            continue
+        findings.append(f"{f.name}:{n}: names an implementation, repo, tool or workspace: {w}")
+
+for x in findings:
+    print(x)
+print(f"{'FAIL' if findings else 'ok'}: {len(findings)} finding(s); {len([h for h in heads if 'Retired' not in h[2]])} active obligations, {count:,} words")
+sys.exit(1 if findings else 0)
